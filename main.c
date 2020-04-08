@@ -8,7 +8,7 @@
 *
 *
 *******************************************************************************
-* (c) (2019), Cypress Semiconductor Corporation. All rights reserved.
+* (c) 2019-2020, Cypress Semiconductor Corporation. All rights reserved.
 *******************************************************************************
 * This software, including source code, documentation and related materials
 * ("Software"), is owned by Cypress Semiconductor Corporation or one of its
@@ -39,7 +39,6 @@
 * indemnify Cypress against all liability.
 *******************************************************************************/
 
-#include "cy_pdl.h"
 #include "cyhal.h"
 #include "cybsp.h"
 #include "cy_retarget_io.h"
@@ -49,40 +48,54 @@
 /*******************************************************************************
 * Macros
 ********************************************************************************/
-/* Trigger level configured in the PDM/PCM */
-#define PDM_PCM_FIFO_TRG_LVL        128u
 /* Define how many samples in a frame */
-#define FRAME_SIZE                  (4*PDM_PCM_FIFO_TRG_LVL)
+#define FRAME_SIZE                  (1024)
 /* Noise threshold hysteresis */
 #define THRESHOLD_HYSTERESIS        3u
 /* Volume ratio for noise and print purposes */
-#define VOLUME_RATIO                (1024u)
+#define VOLUME_RATIO                (4*FRAME_SIZE)
+/* Desired sample rate */
+#define SAMPLE_RATE_HZ              8000u
+/* Decimation Rate of the PDM/PCM block */
+#define DECIMATION_RATE             32u
+/* Audio Subsystem Clock */
+#define AUDIO_SYS_CLOCK_HZ          16384000
+/* PDM/PCM Pins */
+#define PDM_DATA                    P10_5
+#define PDM_CLK                     P10_4
 
 /*******************************************************************************
 * Function Prototypes
 ********************************************************************************/
-void button_isr_handler(void *callback_arg, cyhal_gpio_event_t event);
-void pdm_pcm_isr_handler(void);
+void button_isr_handler(void *arg, cyhal_gpio_event_t event);
+void pdm_pcm_isr_handler(void *arg, cyhal_pdm_pcm_event_t event);
+void clock_init(void);
 
 /*******************************************************************************
 * Global Variables
 ********************************************************************************/
 /* Interrupt flags */
 volatile bool button_flag = false;
-volatile bool pdm_pcm_flag = false;
+volatile bool pdm_pcm_flag = true;
 
 /* Volume variables */
 uint32_t volume = 0;
-uint32_t num_samples = 0;
 uint32_t noise_threshold = THRESHOLD_HYSTERESIS;
 
-const cy_stc_sysint_t pdm_pcm_isr_cfg = {
-#if CY_IP_MXAUDIOSS_INSTANCES == 1
-    .intrSrc = (IRQn_Type) audioss_interrupt_pdm_IRQn,
-#else
-    .intrSrc = (IRQn_Type) audioss_0_interrupt_pdm_IRQn,
-#endif
-    .intrPriority = CYHAL_ISR_PRIORITY_DEFAULT
+/* HAL Object */
+cyhal_pdm_pcm_t pdm_pcm;
+cyhal_clock_t   audio_clock;
+cyhal_clock_t   pll_clock;
+
+/* HAL Config */
+const cyhal_pdm_pcm_cfg_t pdm_pcm_cfg = 
+{
+    .sample_rate     = SAMPLE_RATE_HZ,
+    .decimation_rate = DECIMATION_RATE,
+    .mode            = CYHAL_PDM_PCM_MODE_STEREO, 
+    .word_length     = 16,  /* bits */
+    .left_gain       = 0,   /* dB */
+    .right_gain      = 0,   /* dB */
 };
 
 /*******************************************************************************
@@ -107,6 +120,7 @@ const cy_stc_sysint_t pdm_pcm_isr_cfg = {
 int main(void)
 {
     cy_rslt_t result;
+    int16_t  audio_frame[FRAME_SIZE] = {0};
 
     /* Initialize the device and board peripherals */
     result = cybsp_init() ;
@@ -118,25 +132,25 @@ int main(void)
     /* Enable global interrupts */
     __enable_irq();
 
+    /* Init the clocks */
+    clock_init();
+
     /* Initialize retarget-io to use the debug UART port */
     cy_retarget_io_init(CYBSP_DEBUG_UART_TX, CYBSP_DEBUG_UART_RX, CY_RETARGET_IO_BAUDRATE);
 
     /* Initialize the User LED */
-    cyhal_gpio_init((cyhal_gpio_t) CYBSP_USER_LED, CYHAL_GPIO_DIR_OUTPUT, CYHAL_GPIO_DRIVE_STRONG, CYBSP_LED_STATE_OFF);
+    cyhal_gpio_init(CYBSP_USER_LED, CYHAL_GPIO_DIR_OUTPUT, CYHAL_GPIO_DRIVE_STRONG, CYBSP_LED_STATE_OFF);
 
     /* Initialize the User Button */
-    cyhal_gpio_init((cyhal_gpio_t) CYBSP_USER_BTN, CYHAL_GPIO_DIR_INPUT, CYHAL_GPIO_DRIVE_PULLUP, CYBSP_BTN_OFF);
-    cyhal_gpio_enable_event((cyhal_gpio_t) CYBSP_USER_BTN, CYHAL_GPIO_IRQ_FALL, CYHAL_ISR_PRIORITY_DEFAULT, true);
-    cyhal_gpio_register_callback((cyhal_gpio_t) CYBSP_USER_BTN, button_isr_handler, NULL);
+    cyhal_gpio_init(CYBSP_USER_BTN, CYHAL_GPIO_DIR_INPUT, CYHAL_GPIO_DRIVE_PULLUP, CYBSP_BTN_OFF);
+    cyhal_gpio_enable_event(CYBSP_USER_BTN, CYHAL_GPIO_IRQ_FALL, CYHAL_ISR_PRIORITY_DEFAULT, true);
+    cyhal_gpio_register_callback(CYBSP_USER_BTN, button_isr_handler, NULL);
 
-    /* Initialize the PDM/PCM interrupt (PDL) */
-    Cy_SysInt_Init(&pdm_pcm_isr_cfg, pdm_pcm_isr_handler);
-    NVIC_EnableIRQ(pdm_pcm_isr_cfg.intrSrc);
-
-    /* Initialize the PDM/PCM block (PDL) */
-    Cy_PDM_PCM_Init(CYBSP_PDM_PCM_HW, &CYBSP_PDM_PCM_config);
-    Cy_PDM_PCM_ClearFifo(CYBSP_PDM_PCM_HW);
-    Cy_PDM_PCM_Enable(CYBSP_PDM_PCM_HW);
+    /* Initialize the PDM/PCM block */
+    cyhal_pdm_pcm_init(&pdm_pcm, PDM_DATA, PDM_CLK, &audio_clock, &pdm_pcm_cfg);
+    cyhal_pdm_pcm_register_callback(&pdm_pcm, pdm_pcm_isr_handler, NULL);
+    cyhal_pdm_pcm_enable_event(&pdm_pcm, CYHAL_PDM_PCM_ASYNC_COMPLETE, CYHAL_ISR_PRIORITY_DEFAULT, true);
+    cyhal_pdm_pcm_start(&pdm_pcm);
     
     /* \x1b[2J\x1b[;H - ANSI ESC sequence for clear screen */
     printf("\x1b[2J\x1b[;H");
@@ -153,48 +167,37 @@ int main(void)
             /* Clear the PDM/PCM flag */
             pdm_pcm_flag = 0;
 
+            /* Reset the volume */
+            volume = 0;
+
             /* Calculate the volume by summing the absolute value of all the 
-             * data stored in the PDM/PCM FIFO */
-            for (uint32_t index = 0; index < PDM_PCM_FIFO_TRG_LVL; index++)
+             * audio data from a frame */
+            for (uint32_t index = 0; index < FRAME_SIZE; index++)
             {
-                volume += abs((int32_t) Cy_PDM_PCM_ReadFifo(CYBSP_PDM_PCM_HW));
+                volume += abs(audio_frame[index]);
             }
 
-            /* Add to the number of samples */
-            num_samples += PDM_PCM_FIFO_TRG_LVL;
+            /* Prepare line to report the volume */
+            printf("\n\r");
 
-            /* Clear the PDM/PCM interrupt */
-            Cy_PDM_PCM_ClearInterrupt(CYBSP_PDM_PCM_HW, CY_PDM_PCM_INTR_RX_TRIGGER);
-
-            /* Re-enable PDM/PCM ISR */
-            NVIC_EnableIRQ(pdm_pcm_isr_cfg.intrSrc);
-
-            /* Check if ready to process an entire frame */
-            if (num_samples >= FRAME_SIZE)
+            /* Report the volume */
+            for (uint32_t index = 0; index < (volume/VOLUME_RATIO); index++)
             {
-                /* Prepare line to report the volume */
-                printf("\n\r");
-
-                /* Report the volume */
-                for (uint32_t index = 0; index < (volume/VOLUME_RATIO); index++)
-                {
-                    printf("-");
-                }
-
-                /* Turn ON the LED when the volume is higher than the threshold */
-                if ((volume/VOLUME_RATIO) > noise_threshold)
-                {
-                    cyhal_gpio_write((cyhal_gpio_t) CYBSP_USER_LED, CYBSP_LED_STATE_ON);
-                }
-                else
-                {
-                    cyhal_gpio_write((cyhal_gpio_t) CYBSP_USER_LED, CYBSP_LED_STATE_OFF);
-                }
-
-                /* Reset the number of samples and volume */
-                num_samples = 0;
-                volume = 0;               
+                printf("-");
             }
+
+            /* Turn ON the LED when the volume is higher than the threshold */
+            if ((volume/VOLUME_RATIO) > noise_threshold)
+            {
+                cyhal_gpio_write((cyhal_gpio_t) CYBSP_USER_LED, CYBSP_LED_STATE_ON);
+            }
+            else
+            {
+                cyhal_gpio_write((cyhal_gpio_t) CYBSP_USER_LED, CYBSP_LED_STATE_OFF);
+            }
+
+            /* Setup to read the next frame */
+            cyhal_pdm_pcm_read_async(&pdm_pcm, audio_frame, FRAME_SIZE);
         }
 
         /* Reset the noise threshold if User Button is pressed */
@@ -207,8 +210,10 @@ int main(void)
             noise_threshold = (volume/VOLUME_RATIO) + THRESHOLD_HYSTERESIS;
 
             /* Report the new noise threshold over UART */
-            printf("Noise threshold: %lu\n\r", (uint32_t) noise_threshold);
+            printf("\n\rNoise threshold: %lu\n\r", (uint32_t) noise_threshold);
         }
+
+        cyhal_system_sleep();
 
     }
 }
@@ -217,16 +222,16 @@ int main(void)
 * Function Name: button_isr_handler
 ********************************************************************************
 * Summary:
-* Button ISR handler. Set a flag to be processed in the main loop.
+*  Button ISR handler. Set a flag to be processed in the main loop.
 *
 * Parameters:
-*  callback_arg: not used
-*  event: event that occured
+*  arg: not used
+*  event: event that occurred
 *
 *******************************************************************************/
-void button_isr_handler(void *callback_arg, cyhal_gpio_event_t event)
+void button_isr_handler(void *arg, cyhal_gpio_event_t event)
 {
-    (void) callback_arg;
+    (void) arg;
     (void) event;
 
     button_flag = true;
@@ -236,15 +241,40 @@ void button_isr_handler(void *callback_arg, cyhal_gpio_event_t event)
 * Function Name: pdm_pcm_isr_handler
 ********************************************************************************
 * Summary:
-* PDM/PCM ISR handler. Set a flag to be processed in the main loop.
+*  PDM/PCM ISR handler. Set a flag to be processed in the main loop.
+*
+* Parameters:
+*  arg: not used
+*  event: event that occurred
 *
 *******************************************************************************/
-void pdm_pcm_isr_handler(void)
+void pdm_pcm_isr_handler(void *arg, cyhal_pdm_pcm_event_t event)
 {
-    pdm_pcm_flag = true;
+    (void) arg;
+    (void) event;
 
-    /* Disable PDM/PCM ISR to avoid multiple calls to this ISR */
-    NVIC_DisableIRQ(pdm_pcm_isr_cfg.intrSrc);
+    pdm_pcm_flag = true;
+}
+
+/*******************************************************************************
+* Function Name: clock_init
+********************************************************************************
+* Summary:
+*  Initialize the clocks in the system.
+*
+*******************************************************************************/
+void clock_init(void)
+{
+    /* Initialize the PLL */
+    cyhal_clock_get(&pll_clock, &CYHAL_CLOCK_PLL[0]);
+    cyhal_clock_init(&pll_clock);
+    cyhal_clock_set_frequency(&pll_clock, AUDIO_SYS_CLOCK_HZ, NULL);
+
+    /* Initialize the audio subsystem clock (HFCLK1) */
+    cyhal_clock_get(&audio_clock, &CYHAL_CLOCK_HF[1]);
+    cyhal_clock_init(&audio_clock);
+    cyhal_clock_set_source(&audio_clock, &pll_clock);
+    cyhal_clock_set_enabled(&audio_clock, true, true);
 }
 
 /* [] END OF FILE */
