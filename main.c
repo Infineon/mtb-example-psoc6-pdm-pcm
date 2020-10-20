@@ -54,12 +54,14 @@
 #define THRESHOLD_HYSTERESIS        3u
 /* Volume ratio for noise and print purposes */
 #define VOLUME_RATIO                (4*FRAME_SIZE)
-/* Desired sample rate */
+/* Desired sample rate. Typical values: 8/16/22.05/32/44.1/48kHz */
 #define SAMPLE_RATE_HZ              8000u
-/* Decimation Rate of the PDM/PCM block */
-#define DECIMATION_RATE             32u
-/* Audio Subsystem Clock */
-#define AUDIO_SYS_CLOCK_HZ          16384000
+/* Decimation Rate of the PDM/PCM block. Typical value is 64 */
+#define DECIMATION_RATE             64u
+/* Audio Subsystem Clock. Typical values depends on the desire sample rate:
+- 8/16/48kHz    : 24.576 MHz
+- 22.05/44.1kHz : 22.579 MHz */
+#define AUDIO_SYS_CLOCK_HZ          24576000u
 /* PDM/PCM Pins */
 #define PDM_DATA                    P10_5
 #define PDM_CLK                     P10_4
@@ -210,7 +212,7 @@ int main(void)
             noise_threshold = (volume/VOLUME_RATIO) + THRESHOLD_HYSTERESIS;
 
             /* Report the new noise threshold over UART */
-            printf("\n\rNoise threshold: %lu\n\r", (uint32_t) noise_threshold);
+            printf("\n\rNoise threshold: %lu\n\r", (unsigned long) noise_threshold);
         }
 
         cyhal_system_sleep();
@@ -269,10 +271,14 @@ void clock_init(void)
     cyhal_clock_get(&pll_clock, &CYHAL_CLOCK_PLL[0]);
     cyhal_clock_init(&pll_clock);
     cyhal_clock_set_frequency(&pll_clock, AUDIO_SYS_CLOCK_HZ, NULL);
+    cyhal_clock_set_enabled(&pll_clock, true, true);
 
-    /* Initialize the audio subsystem clock (HFCLK1) */
+    /* Initialize the audio subsystem clock (CLK_HF[1]) 
+     * The CLK_HF[1] is the root clock for the I2S and PDM/PCM blocks */
     cyhal_clock_get(&audio_clock, &CYHAL_CLOCK_HF[1]);
     cyhal_clock_init(&audio_clock);
+
+    /* Source the audio subsystem clock from PLL */
     cyhal_clock_set_source(&audio_clock, &pll_clock);
     cyhal_clock_set_enabled(&audio_clock, true, true);
 }
