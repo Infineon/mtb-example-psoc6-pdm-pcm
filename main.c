@@ -4,26 +4,27 @@
 * Description: This is the source code for the PDM PCM Example
 *              for ModusToolbox.
 *
-* Related Document: See Readme.md
+* Related Document: See README.md 
 *
 *
 *******************************************************************************
-* (c) 2019-2020, Cypress Semiconductor Corporation. All rights reserved.
-*******************************************************************************
-* This software, including source code, documentation and related materials
-* ("Software"), is owned by Cypress Semiconductor Corporation or one of its
-* subsidiaries ("Cypress") and is protected by and subject to worldwide patent
-* protection (United States and foreign), United States copyright laws and
-* international treaty provisions. Therefore, you may use this Software only
-* as provided in the license agreement accompanying the software package from
-* which you obtained this Software ("EULA").
+* Copyright 2021-2022, Cypress Semiconductor Corporation (an Infineon company) or
+* an affiliate of Cypress Semiconductor Corporation.  All rights reserved.
 *
+* This software, including source code, documentation and related
+* materials ("Software") is owned by Cypress Semiconductor Corporation
+* or one of its affiliates ("Cypress") and is protected by and subject to
+* worldwide patent protection (United States and foreign),
+* United States copyright laws and international treaty provisions.
+* Therefore, you may use this Software only as provided in the license
+* agreement accompanying the software package from which you
+* obtained this Software ("EULA").
 * If no EULA applies, Cypress hereby grants you a personal, non-exclusive,
-* non-transferable license to copy, modify, and compile the Software source
-* code solely for use in connection with Cypress's integrated circuit products.
-* Any reproduction, modification, translation, compilation, or representation
-* of this Software except as specified above is prohibited without the express
-* written permission of Cypress.
+* non-transferable license to copy, modify, and compile the Software
+* source code solely for use in connection with Cypress's
+* integrated circuit products.  Any reproduction, modification, translation,
+* compilation, or representation of this Software except as specified
+* above is prohibited without the express written permission of Cypress.
 *
 * Disclaimer: THIS SOFTWARE IS PROVIDED AS-IS, WITH NO WARRANTY OF ANY KIND,
 * EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, NONINFRINGEMENT, IMPLIED
@@ -34,9 +35,9 @@
 * not authorize its products for use in any products where a malfunction or
 * failure of the Cypress product may reasonably be expected to result in
 * significant property damage, injury or death ("High Risk Product"). By
-* including Cypress's product in a High Risk Product, the manufacturer of such
-* system or application assumes all risk of such use and in doing so agrees to
-* indemnify Cypress against all liability.
+* including Cypress's product in a High Risk Product, the manufacturer
+* of such system or application assumes all risk of such use and in doing
+* so agrees to indemnify Cypress against all liability.
 *******************************************************************************/
 
 #include "cyhal.h"
@@ -100,6 +101,14 @@ const cyhal_pdm_pcm_cfg_t pdm_pcm_cfg =
     .right_gain      = 0,   /* dB */
 };
 
+/*This structure is used to initialize callback*/
+cyhal_gpio_callback_data_t cb_data =
+    {
+        .callback = button_isr_handler,
+        .callback_arg = NULL
+ };
+
+
 /*******************************************************************************
 * Function Name: main
 ********************************************************************************
@@ -146,7 +155,7 @@ int main(void)
     /* Initialize the User Button */
     cyhal_gpio_init(CYBSP_USER_BTN, CYHAL_GPIO_DIR_INPUT, CYHAL_GPIO_DRIVE_PULLUP, CYBSP_BTN_OFF);
     cyhal_gpio_enable_event(CYBSP_USER_BTN, CYHAL_GPIO_IRQ_FALL, CYHAL_ISR_PRIORITY_DEFAULT, true);
-    cyhal_gpio_register_callback(CYBSP_USER_BTN, button_isr_handler, NULL);
+    cyhal_gpio_register_callback(CYBSP_USER_BTN, &cb_data);
 
     /* Initialize the PDM/PCM block */
     cyhal_pdm_pcm_init(&pdm_pcm, PDM_DATA, PDM_CLK, &audio_clock, &pdm_pcm_cfg);
@@ -215,7 +224,7 @@ int main(void)
             printf("\n\rNoise threshold: %lu\n\r", (unsigned long) noise_threshold);
         }
 
-        cyhal_system_sleep();
+        cyhal_syspm_sleep();
 
     }
 }
@@ -268,15 +277,13 @@ void pdm_pcm_isr_handler(void *arg, cyhal_pdm_pcm_event_t event)
 void clock_init(void)
 {
     /* Initialize the PLL */
-    cyhal_clock_get(&pll_clock, &CYHAL_CLOCK_PLL[0]);
-    cyhal_clock_init(&pll_clock);
+    cyhal_clock_reserve(&pll_clock, &CYHAL_CLOCK_PLL[0]);
     cyhal_clock_set_frequency(&pll_clock, AUDIO_SYS_CLOCK_HZ, NULL);
     cyhal_clock_set_enabled(&pll_clock, true, true);
 
     /* Initialize the audio subsystem clock (CLK_HF[1]) 
      * The CLK_HF[1] is the root clock for the I2S and PDM/PCM blocks */
-    cyhal_clock_get(&audio_clock, &CYHAL_CLOCK_HF[1]);
-    cyhal_clock_init(&audio_clock);
+    cyhal_clock_reserve(&audio_clock, &CYHAL_CLOCK_HF[1]);
 
     /* Source the audio subsystem clock from PLL */
     cyhal_clock_set_source(&audio_clock, &pll_clock);
